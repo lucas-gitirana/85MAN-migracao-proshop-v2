@@ -1,567 +1,349 @@
-# ProShop eCommerce Platform (v2)
+# Containerização do ProShop v2 com Docker e Docker Compose
 
-> eCommerce platform built with the MERN stack & Redux.
+## 1. Contextualização e Motivação
 
-<img src="./frontend/public/images/screens.png">
+### Repositório de origem
 
-This project is part of my [MERN Stack From Scratch | eCommerce Platform](https://www.traversymedia.com/mern-stack-from-scratch) course. It is a full-featured shopping cart with PayPal & credit/debit payments.
+- **Link:** https://github.com/bradtraversy/proshop-v2
+- **Readme original:** [README](old_readme.md)
+- **Projeto:** ProShop — aplicação de e-commerce full-stack construída com a stack MERN (MongoDB, Express, React, Node.js), de autoria de Brad Traversy.
 
-This is version 2.0 of the app, which uses Redux Toolkit. The first version can be found [here](https://proshopdemo.dev)
+### Cenário Atual
 
-<!-- toc -->
+O projeto é executado de forma **manual e não containerizada**:
 
-- [Features](#features)
-- [Usage](#usage)
-  - [Env Variables](#env-variables)
-  - [Install Dependencies (frontend & backend)](#install-dependencies-frontend--backend)
-  - [Run](#run)
-- [Build & Deploy](#build--deploy)
-  - [Seed Database](#seed-database)
+| Componente | Situação atual |
+|---|---|
+| Node.js | Instalado diretamente no host |
+| Backend | Express `4.18.2` + Mongoose `7.0.1`, executado com `nodemon backend/server.js` (dev) ou `node backend/server.js` (prod) |
+| Banco de dados | MongoDB externo — instalado localmente ou provisionado via MongoDB Atlas, referenciado por `MONGO_URI` em `.env` |
+| Frontend | React `18.2.0` com Create React App (`react-scripts 5.0.1`), servido em modo dev por `react-scripts start` (porta 3000, com proxy para `:5000`) |
+| Build de produção | `npm run build` gera `frontend/build`, que o próprio Express passa a servir como estático quando `NODE_ENV=production` |
+| Upload de imagens | `multer` grava em `uploads/`; em produção o `server.js` serve os arquivos estáticos a partir de `/var/data/uploads` |
+| Orquestração | Nenhuma — dependências e processos são geridos manualmente |
 
-* [Bug Fixes, corrections and code FAQ](#bug-fixes-corrections-and-code-faq)
-  - [BUG: Warnings on ProfileScreen](#bug-warnings-on-profilescreen)
-  - [BUG: Changing an uncontrolled input to be controlled](#bug-changing-an-uncontrolled-input-to-be-controlled)
-  - [BUG: All file types are allowed when updating product images](#bug-all-file-types-are-allowed-when-updating-product-images)
-  - [BUG: Throwing error from productControllers will not give a custom error response](#bug-throwing-error-from-productcontrollers-will-not-give-a-custom-error-response)
-    - [Original code](#original-code)
-  - [BUG: Bad responses not handled in the frontend](#bug-bad-responses-not-handled-in-the-frontend)
-    - [Example from PlaceOrderScreen.jsx](#example-from-placeorderscreenjsx)
-  - [BUG: After switching users, our new user gets the previous users cart](#bug-after-switching-users-our-new-user-gets-the-previous-users-cart)
-  - [BUG: Passing a string value to our `addDecimals` function](#bug-passing-a-string-value-to-our-adddecimals-function)
-  - [BUG: Token and Cookie expiration not handled in frontend](#bug-token-and-cookie-expiration-not-handled-in-frontend)
-  - [BUG: Calculation of prices as decimals gives odd results](#bug-calculation-of-prices-as-decimals-gives-odd-results)
-  - [FAQ: How do I use Vite instead of CRA?](#faq-how-do-i-use-vite-instead-of-cra)
-    - [Setting up the proxy](#setting-up-the-proxy)
-    - [Setting up linting](#setting-up-linting)
-    - [Vite outputs the build to /dist](#vite-outputs-the-build-to-dist)
-    - [Vite has a different script to run the dev server](#vite-has-a-different-script-to-run-the-dev-server)
-    - [A final note:](#a-final-note)
-  - [FIX: issues with LinkContainer](#fix-issues-with-linkcontainer)
-  * [License](#license)
+Com essa configuração, cada desenvolvedor precisa instalar Node.js e MongoDB localmente (ou apontar para um Atlas compartilhado), reproduzir manualmente as variáveis de ambiente, e o comportamento de upload de imagens diverge entre desenvolvimento e produção.
 
-<!-- tocstop -->
+### Cenário Alvo
 
-## Features
+Migração para uma arquitetura **containerizada com Docker e Docker Compose**, composta por dois serviços orquestrados:
 
-- Full featured shopping cart
-- Product reviews and ratings
-- Top products carousel
-- Product pagination
-- Product search feature
-- User profile with orders
-- Admin product management
-- Admin user management
-- Admin Order details page
-- Mark orders as delivered option
-- Checkout process (shipping, payment method, etc)
-- PayPal / credit card integration
-- Database seeder (products & users)
+| Componente | Situação alvo |
+|---|---|
+| Runtime | Imagem `node:22-alpine` (LTS ativa/manutenção, compatível com Express 4, Mongoose 7 e o webpack 5 usado pelo `react-scripts 5`) |
+| Backend + Frontend | Um único serviço `app`, construído com **Dockerfile multi-stage**: stage 1 compila o frontend (`npm run build`), stage 2 roda `node backend/server.js` em modo `production`, servindo API e estáticos pela mesma porta (5000) — preservando a arquitetura single-service já prevista no código |
+| Banco de dados | Serviço `mongo`, imagem oficial `mongo:7`, com dados persistidos em volume nomeado (`mongo_data`) |
+| Upload de imagens | Caminho de upload unificado via variável de ambiente `UPLOADS_DIR`, usada tanto pelo `multer` quanto pela rota estática do Express, persistido em volume nomeado (`uploads_data`) — elimina a divergência dev/prod existente hoje |
+| Orquestração | `docker-compose.yml` único, subindo todo o ambiente (`app` + `mongo`) com `docker compose up`, incluindo healthcheck do Mongo e `depends_on` condicionado |
 
-## Usage
+### Justificativa técnica e benefícios esperados
 
-- Create a MongoDB database and obtain your `MongoDB URI` - [MongoDB Atlas](https://www.mongodb.com/cloud/atlas/register)
-- Create a PayPal account and obtain your `Client ID` - [PayPal Developer](https://developer.paypal.com/)
-
-### Env Variables
-
-Rename the `.env.example` file to `.env` and add the following
-
-```
-NODE_ENV = development
-PORT = 5000
-MONGO_URI = your mongodb uri
-JWT_SECRET = 'abc123'
-PAYPAL_CLIENT_ID = your paypal client id
-PAGINATION_LIMIT = 8
-```
-
-Change the JWT_SECRET and PAGINATION_LIMIT to what you want
-
-### Install Dependencies (frontend & backend)
-
-```
-npm install
-cd frontend
-npm install
-```
-
-### Run
-
-```
-
-# Run frontend (:3000) & backend (:5000)
-npm run dev
-
-# Run backend only
-npm run server
-```
-
-## Build & Deploy
-
-```
-# Create frontend prod build
-cd frontend
-npm run build
-```
-
-### Seed Database
-
-You can use the following commands to seed the database with some sample users and products as well as destroy all data
-
-```
-# Import data
-npm run data:import
-
-# Destroy data
-npm run data:destroy
-```
-
-```
-Sample User Logins
-
-admin@email.com (Admin)
-123456
-
-john@email.com (Customer)
-123456
-
-jane@email.com (Customer)
-123456
-```
+- **Paridade dev/produção:** todos os ambientes rodam a mesma imagem Node e a mesma versão de MongoDB.
+- **Facilidade de onboarding:** um novo desenvolvedor sobe backend, frontend buildado e banco de dados com `docker compose up`, sem instalar Node.js, MongoDB ou gerenciar versões localmente.
+- **Isolamento de dependências:** remove a necessidade de MongoDB instalado no host ou de credenciais de um Atlas compartilhado só para desenvolvimento local.
+- **Correção de bug de arquitetura:** unifica o caminho de armazenamento de uploads entre dev e produção, hoje divergente.
+- **Portabilidade:** a aplicação containerizada pode ser implantada em qualquer provedor com suporte a containers, não ficando presa a particularidades de uma única infraestrutura.
+- **Base para CI/CD:** a mesma imagem construída em CI pode ser promovida para produção, reduzindo divergência entre o que é testado e o que é implantado.
 
 ---
 
-# Bug Fixes, corrections and code FAQ
+## 2. Ambiente e Pré-requisitos
 
-The code here in the main branch has been updated since the course was published to fix bugs found by students of the course and answer common questions, if you are looking to compare your code to that from the course lessons then
-please refer to the [originalcoursecode](https://github.com/bradtraversy/proshop-v2/tree/originalCourseCode) branch of this repository.
+Antes de iniciar, garanta que a máquina onde a migração será executada possui:
 
-There are detailed notes in the comments that will hopefully help you understand
-and adopt the changes and corrections.
-An easy way of seeing all the changes and fixes is to use a note highlighter
-extension such as [This one for VSCode](https://marketplace.visualstudio.com/items?itemName=wayou.vscode-todo-highlight) or [this one for Vim](https://github.com/folke/todo-comments.nvim) Where by you can easily list all the **NOTE:** and **FIX:** tags in the comments.
+| Ferramenta | Versão mínima | Verificação |
+|---|---|---|
+| Docker Engine | ≥ 24.x | `docker --version` |
+| Docker Compose (plugin v2) | ≥ 2.20 | `docker compose version` |
+| Git | qualquer versão recente | `git --version` |
+| Portas livres no host | `5000` (app) e `27017` (mongo, opcional expor) | `lsof -i :5000` / `lsof -i :27017` |
 
-### BUG: Warnings on ProfileScreen
+Credenciais e valores necessários (já usados hoje pelo projeto, apenas reorganizados em um `.env` consumido pelo Compose):
 
-We see the following warning in the browser console..
+- `JWT_SECRET` — qualquer string secreta para assinatura de tokens.
+- `PAYPAL_CLIENT_ID` / `PAYPAL_APP_SECRET` — opcional para rodar a aplicação; necessário apenas para testar o fluxo de checkout via PayPal Sandbox ([developer.paypal.com](https://developer.paypal.com/)).
+- `PAGINATION_LIMIT` — inteiro, ex. `8` (já usado pelo backend, ausente do `.env.example` do repositório mas documentado no `readme.md`).
 
-`<tD> cannot appear as a child of <tr>.`
+Não é necessário instalar Node.js, npm ou MongoDB no host, pois toda a stack de execução passa a viver dentro dos containers. Node.js e Git seguem necessários apenas para clonar o repositório e (opcionalmente) rodar linters/editor localmente.
 
-and
+---
 
-`warning: Received 'true' for a non-boolean attribute table.`
+## 3. Roteiro de Migração
 
-> Code changes can be seen in [ProfileScreen.jsx](https://github.com/bradtraversy/proshop-v2/tree/main/frontend/src/screens/ProfileScreen.jsx)
+> Todos os comandos abaixo assumem que o terminal está na raiz do repositório clonado (`proshop-v2/`).
 
-### BUG: Changing an uncontrolled input to be controlled
-
-In our SearchBox input, it's possible that our `urlKeyword` is **undefined**, in
-which case our initial state will be **undefined** and we will have an
-uncontrolled input initially i.e. not bound to state.
-In the case of `urlKeyword` being **undefined** we can set state to an empty
-string.
-
-> Code changes can be seen in [SearchBox.jsx](https://github.com/bradtraversy/proshop-v2/tree/main/frontend/src/components/SearchBox.jsx)
-
-### BUG: All file types are allowed when updating product images
-
-When updating and uploading product images as an Admin user, all file types are allowed. We only want to upload image files. This is fixed by using a fileFilter function and sending back an appropriate error when the wrong file type is uploaded.
-
-You may see that our `checkFileType` function is declared but never actually
-used, this change fixes that. The function has been renamed to `fileFilter` and
-passed to the instance of [ multer ](https://github.com/expressjs/multer#filefilter)
-
-> Code changes can be seen in [uploadRoutes.js](https://github.com/bradtraversy/proshop-v2/tree/main/backend/routes/uploadRoutes.js)
-
-### BUG: Throwing error from productControllers will not give a custom error response
-
-In section **3 - Custom Error Middleware** we throw an error from our
-`getProductById` controller function, with a _custom_ message.
-However if we have a invalid **ObjectId** as `req.params.id` and use that to
-query our products in the database, Mongoose will throw an error before we
-reach the line of code where we throw our own error.
-
-#### Original code
-
-```js
-const getProductById = asyncHandler(async (req, res) => {
-  const product = await Product.findById(req.params.id);
-  if (product) {
-    return res.json(product);
-  }
-  // NOTE: the following will never run if we have an invalid ObjectId
-  res.status(404);
-  throw new Error('Resource not found');
-});
-```
-
-Instead what we can do is if we do want to check for an invalid ObjectId is use
-a built in method from Mongoose - [isValidObjectId](<https://mongoosejs.com/docs/api/mongoose.html#Mongoose.prototype.isValidObjectId()>)
-There are a number of places in the project where we may want to check we are
-getting a valid ObjectId, so we can extract this logic to it's own middleware
-and drop it in to any route handler that needs it.  
-This also removes the need to check for a cast error in our errorMiddleware and
-is a little more explicit in checking for such an error.
-
-> Changes can be seen in [errorMiddleware.js](https://github.com/bradtraversy/proshop-v2/tree/main/backend/middleware/errorMiddleware.js), [productRoutes.js](https://github.com/bradtraversy/proshop-v2/tree/main/backend/routes/productRoutes.js), [productController.js](https://github.com/bradtraversy/proshop-v2/tree/main/backend/controllers/productController.js) and [checkObjectId.js](https://github.com/bradtraversy/proshop-v2/tree/main/backend/middleware/checkObjectId.js)
-
-### BUG: Bad responses not handled in the frontend
-
-There are a few cases in our frontend where if we get a bad response from our
-API then we try and render the error object.
-This you cannot do in React - if you are seeing an error along the lines of
-**Objects are not valid as a React child** and the app breaks for you, then this
-is likely the fix you need.
-
-#### Example from PlaceOrderScreen.jsx
-
-```jsx
-<ListGroup.Item>
-  {error && <Message variant='danger'>{error}</Message>}
-</ListGroup.Item>
-```
-
-In the above code we check for a error that we get from our [useMutation](https://redux-toolkit.js.org/rtk-query/usage/mutations)
-hook. This will be an object though which we cannot render in React, so here we
-need the message we sent back from our API server...
-
-```jsx
-<ListGroup.Item>
-  {error && <Message variant='danger'>{error.data.message}</Message>}
-</ListGroup.Item>
-```
-
-The same is true for [handling errors from our RTK queries.](https://redux-toolkit.js.org/rtk-query/usage/error-handling)
-
-> Changes can be seen in:-
->
-> - [PlaceOrderScreen.jsx](https://github.com/bradtraversy/proshop-v2/tree/main/frontend/src/screens/PlaceOrderScreen.jsx)
-> - [OrderScreen.jsx](https://github.com/bradtraversy/proshop-v2/tree/main/frontend/src/screens/OrderScreen.jsx)
-> - [ProductEditScreen.jsx](https://github.com/bradtraversy/proshop-v2/tree/main/frontend/src/screens/admin/ProductEditScreen.jsx)
-> - [ProductListScreen.jsx](https://github.com/bradtraversy/proshop-v2/tree/main/frontend/src/screens/admin/ProductListScreen.jsx)
-
-### BUG: After switching users, our new user gets the previous users cart
-
-When our user logs out we clear **userInfo** and **expirationTime** from local
-storage but not the **cart**.  
-So when we log in with a different user, they _inherit_ the previous users cart
-and shipping information.
-
-The solution is to simply clear local storage entirely and so remove the
-**cart**, **userInfo** and **expirationTime**.
-
-> Changes can be seen in:-
->
-> - [authSlice.js](https://github.com/bradtraversy/proshop-v2/tree/main/frontend/src/slices/authSlice.js)
-> - [cartSlice.js](https://github.com/bradtraversy/proshop-v2/tree/main/frontend/src/slices/cartSlice.js)
-> - [Header.jsx](https://github.com/bradtraversy/proshop-v2/tree/main/frontend/src/components/Header.jsx)
-
-### BUG: Passing a string value to our `addDecimals` function
-
-Our `addDecimals` function expects a **Number** type as an argument so calling
-it by passing a **String** type as the argument could produce some issues.
-It kind of works because JavaScript type coerces the string to a number when we
-try to use mathematic operators on strings. But this is prone to error and can
-be improved.
-
-> Changes can be seen in:
->
-> - [cartUtils.js](https://github.com/bradtraversy/proshop-v2/tree/main/frontend/src/utils/cartUtils.js)
-> - [calcPrices.js](https://github.com/bradtraversy/proshop-v2/tree/main/backend/utils/calcPrices.js)
-
-### BUG: Token and Cookie expiration not handled in frontend
-
-The cookie and the JWT expire after 30 days.
-However for our private routing in the client our react app simply trusts that if we have a user in local storage, then that user is authenticated.
-So we have a situation where in the client they can access private routes, but the API calls to the server fail because there is no cookie with a valid JWT.
-
-The solution is to wrap/customize the RTK [baseQuery](https://redux-toolkit.js.org/rtk-query/usage/customizing-queries#customizing-queries-with-basequery) with our own custom functionality that will log out a user on any 401 response
-
-> Changes can be seein in:
->
-> - [apiSlice.js](https://github.com/bradtraversy/proshop-v2/tree/main/frontend/src/slices/apiSlice.js)
-
-Additionally we can remove the following code:
-
-```js
-const expirationTime = new Date().getTime() + 30 * 24 * 60 * 60 * 1000; // 30 days
-localStorage.setItem('expirationTime', expirationTime);
-```
-
-from our [authSlice.js](https://github.com/bradtraversy/proshop-v2/tree/main/frontend/src/slices/authSlice.js) as it's never
-actually used in the project in any way.
-
-### BUG: Calculation of prices as decimals gives odd results
-
-JavaSCript uses floating point numbers for decimals which can give some funky
-results for example:
-
-```js
-0.1 + 0.2; // 0.30000000000000004 🤯
-```
-
-Or a more specific example in our application would be that our airpods have a
-`price: 89.99` and if we do:
-
-```js
-3 * 89.99; // 269.96999999999997
-```
-
-The solution would be to calculate prices in whole numbers:
-
-```js
-(3 * (89.99 * 100)) / 100; // 269.97
-```
-
-> Changes can be see in in:
->
-> - [PlaceOrderScreen.jsx](https://github.com/bradtraversy/proshop-v2/tree/main/frontend/src/screens/PlaceOrderScreen.jsx)
-> - [cartUtils.js](https://github.com/bradtraversy/proshop-v2/tree/main/frontend/src/utils/cartUtils.js)
-> - [calcPrices.js](https://github.com/bradtraversy/proshop-v2/tree/main/backend/utils/calcPrices.js)
-
-### FAQ: How do I use Vite instead of CRA?
-
-Ok so you're at **Section 1 - Starting The Frontend** in the course and you've
-heard cool things about [Vite](https://vitejs.dev/) and why you should use that
-instead of [Create React App](https://create-react-app.dev/) in 2023.
-
-There are a few differences you need to be aware of using Vite in place of CRA
-here in the course after [scaffolding out your Vite React app](https://github.com/vitejs/vite/tree/main/packages/create-vite#create-vite)
-
-#### Setting up the proxy
-
-Using CRA we have a `"proxy"` setting in our frontend/package.json to avoid
-breaking the browser [Same Origin Policy](https://developer.mozilla.org/en-US/docs/Web/Security/Same-origin_policy) in development.
-In Vite we have to set up our proxy in our
-[vite.config.js](https://vitejs.dev/config/server-options.html#server-proxy).
-
-```js
-import { defineConfig } from 'vite';
-import react from '@vitejs/plugin-react';
-
-export default defineConfig({
-  plugins: [react()],
-  server: {
-    // proxy requests prefixed '/api' and '/uploads'
-    proxy: {
-      '/api': 'http://localhost:5000',
-      '/uploads': 'http://localhost:5000',
-    },
-  },
-});
-```
-
-#### Setting up linting
-
-By default CRA outputs linting from eslint to your terminal and browser console.
-To get Vite to ouput linting to the terminal you need to add a [plugin](https://www.npmjs.com/package/vite-plugin-eslint) as a
-development dependency...
+### Passo 1 — Confirmar o estado do repositório
 
 ```bash
-npm i -D vite-plugin-eslint
-
+git clone https://github.com/bradtraversy/proshop-v2.git
+cd proshop-v2
+git status
 ```
 
-Then add the plugin to your **vite.config.js**
+Crie uma branch dedicada para a migração, preservando a branch principal intacta para rollback:
 
-```js
-import { defineConfig } from 'vite';
-import react from '@vitejs/plugin-react';
-// import the plugin
-import eslintPlugin from 'vite-plugin-eslint';
+```bash
+git checkout -b feature/dockerize
+```
 
-export default defineConfig({
-  plugins: [
-    react(),
-    eslintPlugin({
-      // setup the plugin
-      cache: false,
-      include: ['./src/**/*.js', './src/**/*.jsx'],
-      exclude: [],
-    }),
-  ],
-  server: {
-    proxy: {
-      '/api': 'http://localhost:5000',
-      '/uploads': 'http://localhost:5000',
+### Passo 2 — Unificar o caminho de uploads (correção necessária antes de containerizar)
+
+Hoje `backend/routes/uploadRoutes.js` grava em `uploads/` (relativo), enquanto `backend/server.js` serve, em produção, o caminho fixo `/var/data/uploads`. Para funcionar de forma consistente dentro de um container, introduza uma variável de ambiente única `UPLOADS_DIR`.
+
+**`backend/routes/uploadRoutes.js`** — altere o `destination` do `multer.diskStorage`:
+
+```diff
++ const uploadsDir = process.env.UPLOADS_DIR || 'uploads';
++
+  const storage = multer.diskStorage({
+    destination(req, file, cb) {
+-     cb(null, 'uploads/');
++     cb(null, uploadsDir);
     },
-  },
-});
 ```
 
-By default the eslint config that comes with a Vite React project treats some
-rules from React as errors which will break your app if you are following Brad exactly.
-You can change those rules to give a warning instead of an error by modifying
-the **eslintrc.cjs** that came with your Vite project.
+**`backend/server.js`** — substitua o caminho de produção pela mesma variável:
 
-```js
-module.exports = {
-  env: { browser: true, es2020: true },
-  extends: [
-    'eslint:recommended',
-    'plugin:react/recommended',
-    'plugin:react/jsx-runtime',
-    'plugin:react-hooks/recommended',
-  ],
-  parserOptions: { ecmaVersion: 'latest', sourceType: 'module' },
-  settings: { react: { version: '18.2' } },
-  plugins: ['react-refresh'],
-  rules: {
-    // turn this one off
-    'react/prop-types': 'off',
-    // change these errors to warnings
-    'react-refresh/only-export-components': 'warn',
-    'no-unused-vars': 'warn',
-  },
-};
+```diff
++ const uploadsDir = process.env.UPLOADS_DIR || 'uploads';
++
+  if (process.env.NODE_ENV === 'production') {
+    const __dirname = path.resolve();
+-   app.use('/uploads', express.static('/var/data/uploads'));
++   app.use('/uploads', express.static(path.join(__dirname, uploadsDir)));
+    app.use(express.static(path.join(__dirname, '/frontend/build')));
+    ...
+  } else {
+    const __dirname = path.resolve();
+-   app.use('/uploads', express.static(path.join(__dirname, '/uploads')));
++   app.use('/uploads', express.static(path.join(__dirname, uploadsDir)));
+    ...
+  }
 ```
 
-#### Vite outputs the build to /dist
+Isso torna o diretório de uploads configurável e idêntico em dev/prod, permitindo montar um único volume Docker para ambos os casos.
 
-Create React App by default outputs the build to a **/build** directory and this is
-what we serve from our backend in production.  
-Vite by default outputs the build to a **/dist** directory so we need to make
-some adjustments to our [backend/server.js](https://github.com/bradtraversy/proshop-v2/tree/main/backend/server.js)
-Change...
+### Passo 3 — Criar o `.dockerignore`
 
-```js
-app.use(express.static(path.join(__dirname, '/frontend/build')));
-```
-
-to...
-
-```js
-app.use(express.static(path.join(__dirname, '/frontend/dist')));
-```
-
-and...
-
-```js
-app.get('*', (req, res) =>
-  res.sendFile(path.resolve(__dirname, 'frontend', 'build', 'index.html'))
-);
-```
-
-to...
-
-```js
-app.get('*', (req, res) =>
-  res.sendFile(path.resolve(__dirname, 'frontend', 'dist', 'index.html'))
-);
-```
-
-#### Vite has a different script to run the dev server
-
-In a CRA project you run `npm start` to run the development server, in Vite you
-start the development server with `npm run dev`  
-If you are using the **dev** script in your root pacakge.json to run the project
-using concurrently, then you will also need to change your root package.json
-scripts from...
-
-```json
-    "client": "npm start --prefix frontend",
-```
-
-to...
-
-```json
-    "client": "npm run dev --prefix frontend",
-```
-
-Or you can if you wish change the frontend/package.json scripts to use `npm
-start`...
-
-```json
-    "start": "vite",
-```
-
-#### A final note:
-
-Vite requires you to name React component files using the `.jsx` file
-type, so you won't be able to use `.js` for your components. The entry point to
-your app will be in `main.jsx` instead of `index.js`
-
-And that's it! You should be good to go with the course using Vite.
-
-### FIX: issues with LinkContainer
-
-The `LinkContainer` component from [react-router-bootstrap](https://github.com/react-bootstrap/react-router-bootstrap) was used to wrap React Routers `Link` component for convenient integration between React Router and styling with Bootstrap.  
-However **react-router-bootstrap** hasn't kept up with React and you may see
-warnings in your console along the lines of:
+Na raiz do projeto, crie `.dockerignore` para manter o contexto de build enxuto e evitar copiar artefatos locais para dentro da imagem:
 
 ```
- LinkContainer: Support for defaultProps will be removed from function components in a future major release. Use JavaScript default parameters instead.
+node_modules
+frontend/node_modules
+frontend/build
+uploads
+.git
+.env
+npm-debug.log*
+*.md
 ```
 
-Which is because React is removing default component props in favour of using
-default function parameters and `LinkContainer` still uses
-`Component.defaultProps`.  
-However you don't really need `LinkContainer` as we can simply use the `as` prop
-on any React Bootstrap component to render any element of your choice, including
-React Routers `Link` component.
+### Passo 4 — Criar o `Dockerfile` (multi-stage)
 
-For example in our [Header.jsx](frontend/src/components/Header.jsx) we can first
-import `Link`:
+Na raiz do projeto, crie `Dockerfile`:
 
-```jsx
-import { useNavigate, Link } from 'react-router-dom';
+```dockerfile
+# ---- Stage 1: build do frontend ----
+FROM node:22-alpine AS frontend-build
+WORKDIR /app/frontend
+COPY frontend/package*.json ./
+RUN npm ci
+COPY frontend/ ./
+RUN npm run build
+
+# ---- Stage 2: runtime (backend + estáticos do frontend) ----
+FROM node:22-alpine AS runtime
+ENV NODE_ENV=production
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm ci --omit=dev
+
+COPY backend/ ./backend/
+COPY --from=frontend-build /app/frontend/build ./frontend/build
+
+RUN mkdir -p /app/uploads
+VOLUME ["/app/uploads"]
+
+EXPOSE 5000
+CMD ["node", "backend/server.js"]
 ```
 
-Then instead of using `LinkContainer`:
+Esse Dockerfile reflete o `build` script já existente em `package.json` (`npm install && npm install --prefix frontend && npm run build --prefix frontend`), mas separado em estágios para manter a imagem final sem as dependências de build do React (menor e mais segura).
 
-```jsx
-<LinkContainer to='/'>
-  <Navbar.Brand>
-    <img src={logo} alt='ProShop' />
-    ProShop
-  </Navbar.Brand>
-</LinkContainer>
+### Passo 5 — Criar o `docker-compose.yml`
+
+Na raiz do projeto, crie `docker-compose.yml`:
+
+```yaml
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: proshop-v2-app:latest
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      MONGO_URI: mongodb://mongo:27017/proshop
+      UPLOADS_DIR: uploads
+    volumes:
+      - uploads_data:/app/uploads
+    depends_on:
+      mongo:
+        condition: service_healthy
+
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  mongo_data:
+  uploads_data:
 ```
 
-We can remove `LinkContainer` and use the **as** prop on the `Navbar.Brand`
+> `MONGO_URI` aponta para o hostname do serviço `mongo`, substituindo a URI do Atlas usada em dev manual.
 
-```jsx
-<Navbar.Brand as={Link} to='/'>
-  <img src={logo} alt='ProShop' />
-  ProShop
-</Navbar.Brand>
+### Passo 6 — Criar o `.env` consumido pelo Compose
+
+Baseado em `.env.example`, crie um `.env` na raiz (não versionado):
+
+```
+JWT_SECRET=troque-por-um-segredo-forte
+PAYPAL_CLIENT_ID=seu_client_id_sandbox
+PAYPAL_APP_SECRET=seu_app_secret_sandbox
+PAYPAL_API_URL=https://api-m.sandbox.paypal.com
+PAGINATION_LIMIT=8
 ```
 
-> **Changes can be seen in:**
->
-> - [Header.jsx](frontend/src/components/Header.jsx)
-> - [CheckoutSteps.jsx](frontend/src/components/CheckoutSteps.jsx)
-> - [Paginate.jsx](frontend/src/components/Paginate.jsx)
-> - [ProfileScreen.jsx](frontend/src/screens/ProfileScreen.jsx)
-> - [OrderListScreen.jsx](frontend/src/screens/admin/OrderListScreen.jsx)
-> - [ProductListScreen.jsx](frontend/src/screens/admin/ProductListScreen.jsx)
-> - [UserListScreen.jsx](frontend/src/screens/admin/UserListScreen.jsx)
+`PORT`, `NODE_ENV`, `MONGO_URI` e `UPLOADS_DIR` já são definidos diretamente em `docker-compose.yml` e não precisam ser repetidos aqui.
 
-After these changes you can then remove **react-router-bootstrap** from your
-dependencies in [frontend/package.json](frontend/package.json)
+### Passo 7 — Build e subida dos containers
+
+```bash
+docker compose build
+docker compose up -d
+docker compose ps
+```
+
+Acompanhe os logs até confirmar a conexão com o banco:
+
+```bash
+docker compose logs -f app
+```
+
+Saída esperada: `MongoDB Connected: mongo` seguido de `Server running in production mode on port 5000`.
+
+### Passo 8 — Popular o banco de dados (seed)
+
+O script `backend/seeder.js` já existe no projeto (`npm run data:import` / `data:destroy`). Execute-o dentro do container `app`:
+
+```bash
+docker compose exec app node backend/seeder
+```
+
+Para limpar os dados de exemplo:
+
+```bash
+docker compose exec app node backend/seeder -d
+```
+
+### Passo 9 — Acessar a aplicação
+
+- Aplicação completa (frontend + API): [http://localhost:5000](http://localhost:5000)
+- Health check simples da API: `curl http://localhost:5000/api/products`
 
 ---
 
-## License
+## 4. Plano de Rollback e Testes de Validação
 
-The MIT License
+### Validação
 
-Copyright (c) 2023 Traversy Media https://traversymedia.com
+Checklist para confirmar que a aplicação migrada está funcional e sem regressões em relação ao fluxo manual original:
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+1. **Containers saudáveis**
+   ```bash
+   docker compose ps
+   ```
+   Ambos os serviços (`app`, `mongo`) devem estar `Up`/`healthy`.
 
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
+2. **API respondendo**
+   ```bash
+   curl -i http://localhost:5000/api/products
+   ```
+   Deve retornar `200 OK` com a lista de produtos (após o seed do Passo 8).
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
+3. **Frontend servido corretamente**
+   Acessar `http://localhost:5000` no navegador e confirmar o carregamento da home com o catálogo de produtos.
+
+4. **Autenticação**
+   Login com o usuário admin criado pelo `seeder.js` (`admin@email.com` / `123456`, conforme `backend/data/users.js`) e confirmar acesso ao painel `/admin/userlist`.
+
+5. **Upload de imagem** (valida a correção do Passo 2)
+   No painel de admin, editar um produto e enviar uma nova imagem. Confirmar que:
+   - o upload retorna `200` com o caminho da imagem;
+   - a imagem é exibida corretamente no catálogo (prova que o caminho de escrita do `multer` e o caminho de leitura estático do Express agora coincidem).
+
+6. **Persistência de dados após reinício**
+   ```bash
+   docker compose restart
+   ```
+   Produtos, usuários e a imagem enviada no passo anterior devem continuar presentes — confirma que os volumes nomeados (`mongo_data`, `uploads_data`) estão funcionando.
+
+7. **Fluxo de pedido completo**
+   Adicionar produto ao carrinho, finalizar endereço/pagamento e confirmar criação do pedido em `/orderlist` (admin).
+
+8. **Ausência de regressões nos logs**
+   ```bash
+   docker compose logs app --tail=100
+   ```
+   Sem stack traces não tratados durante o fluxo de teste acima.
+
+Somente considerar a migração bem-sucedida quando **todos** os itens acima passarem.
+
+### Rollback
+
+Procedimento para reverter ao estado original em caso de falha durante a validação:
+
+1. **Parar e remover os containers da migração**
+   ```bash
+   docker compose down
+   ```
+   Use `docker compose down -v` **apenas** se os dados de teste em `mongo_data`/`uploads_data` puderem ser descartados sem impacto — nunca em um ambiente com dados reais de produção sem backup prévio (ver item 4).
+
+2. **Reverter as alterações de código**
+   ```bash
+   git checkout main
+   git branch -D feature/dockerize   # opcional, apaga a branch de migração
+   ```
+   Como os Passos 2–6 foram feitos em uma branch isolada (`feature/dockerize`), a branch principal permanece no estado manual original, sem necessidade de reverter diffs manualmente.
+
+3. **Restaurar a execução manual**
+   ```bash
+   npm install
+   npm install --prefix frontend
+   cp .env.example .env   # preencher com MONGO_URI de um MongoDB local ou Atlas
+   npm run dev
+   ```
+   Isso restaura o fluxo original: backend via `nodemon` na porta 5000 e frontend via `react-scripts start` na porta 3000, exatamente como antes da migração.
+
+4. **Se dados de produção já haviam sido migrados para o container `mongo`:**
+   - Antes de qualquer rollback em ambiente com dados reais, execute `mongodump` contra o `mongo` do Compose:
+     ```bash
+     docker compose exec mongo mongodump --db=proshop --out=/data/db/backup
+     docker cp $(docker compose ps -q mongo):/data/db/backup ./backup-pre-rollback
+     ```
+   - Restaure esse backup no MongoDB de destino (Atlas ou instância local) usando `mongorestore` antes de desligar o container, garantindo que nenhum pedido/usuário criado durante o período em Docker seja perdido.
+
+5. **Critério de decisão para rollback:** acionar este procedimento se, após o Passo 9, qualquer item do checklist de Validação falhar de forma não corrigível em até uma iteração de ajuste no Dockerfile/Compose, ou se o serviço `mongo` não atingir o estado `healthy` por causa raiz não identificável em tempo hábil.
