@@ -70,13 +70,13 @@ Não é necessário instalar Node.js, npm ou MongoDB no host, pois toda a stack 
 
 ## 3. Roteiro de Migração
 
-> Todos os comandos abaixo assumem que o terminal está na raiz do repositório clonado (`proshop-v2/`).
+> Todos os comandos abaixo assumem que o terminal está na raiz do repositório clonado (`85MAN-migracao-proshop-v2/`).
 
 ### Passo 1 — Confirmar o estado do repositório
 
 ```bash
-git clone https://github.com/bradtraversy/proshop-v2.git
-cd proshop-v2
+git clone https://github.com/lucas-gitirana/85MAN-migracao-proshop-v2.git
+cd 85MAN-migracao-proshop-v2
 git status
 ```
 
@@ -123,9 +123,9 @@ Hoje `backend/routes/uploadRoutes.js` grava em `uploads/` (relativo), enquanto `
 
 Isso torna o diretório de uploads configurável e idêntico em dev/prod, permitindo montar um único volume Docker para ambos os casos.
 
-### Passo 3 — Criar o `.dockerignore`
+### Passo 3 — `.dockerignore`
 
-Na raiz do projeto, crie `.dockerignore` para manter o contexto de build enxuto e evitar copiar artefatos locais para dentro da imagem:
+O arquivo [`.dockerignore`](.dockerignore) já está versionado na raiz do repositório, mantendo o contexto de build enxuto e evitando copiar artefatos locais para dentro da imagem:
 
 ```
 node_modules
@@ -138,9 +138,9 @@ npm-debug.log*
 *.md
 ```
 
-### Passo 4 — Criar o `Dockerfile` (multi-stage)
+### Passo 4 — `Dockerfile` (multi-stage)
 
-Na raiz do projeto, crie `Dockerfile`:
+O [`Dockerfile`](Dockerfile) multi-stage também já está versionado na raiz do repositório:
 
 ```dockerfile
 # ---- Stage 1: build do frontend ----
@@ -171,9 +171,9 @@ CMD ["node", "backend/server.js"]
 
 Esse Dockerfile reflete o `build` script já existente em `package.json` (`npm install && npm install --prefix frontend && npm run build --prefix frontend`), mas separado em estágios para manter a imagem final sem as dependências de build do React (menor e mais segura).
 
-### Passo 5 — Criar o `docker-compose.yml`
+### Passo 5 — `docker-compose.yml`
 
-Na raiz do projeto, crie `docker-compose.yml`:
+O [`docker-compose.yml`](docker-compose.yml) já está versionado na raiz do repositório:
 
 ```yaml
 services:
@@ -235,6 +235,12 @@ PAGINATION_LIMIT=8
 docker compose build
 docker compose up -d
 docker compose ps
+```
+
+Alternativa em um único comando — útil na primeira execução ou sempre que o `Dockerfile`/código-fonte mudar, pois força o rebuild da imagem antes de subir os containers:
+
+```bash
+docker compose up --build
 ```
 
 Acompanhe os logs até confirmar a conexão com o banco:
@@ -347,3 +353,17 @@ Procedimento para reverter ao estado original em caso de falha durante a valida�
    - Restaure esse backup no MongoDB de destino (Atlas ou instância local) usando `mongorestore` antes de desligar o container, garantindo que nenhum pedido/usuário criado durante o período em Docker seja perdido.
 
 5. **Critério de decisão para rollback:** acionar este procedimento se, após o Passo 9, qualquer item do checklist de Validação falhar de forma não corrigível em até uma iteração de ajuste no Dockerfile/Compose, ou se o serviço `mongo` não atingir o estado `healthy` por causa raiz não identificável em tempo hábil.
+
+---
+
+## Apêndice: Quadro de Melhorias (Pós-Peer Review)
+
+Este documento foi avaliado por 3 colegas. O feedback consolidado considerou o trabalho estruturalmente sólido, sem necessidade de mudanças de fundo — apenas melhorias de organização e conveniência, aplicadas abaixo:
+
+| # | Feedback recebido | Alteração aplicada |
+|---|---|---|
+| 1 | Transformar os blocos de código do README em arquivos reais no repositório | [`Dockerfile`](Dockerfile), [`docker-compose.yml`](docker-compose.yml) e [`.dockerignore`](.dockerignore) passaram a existir de fato na raiz do repositório; os Passos 3–5 do roteiro agora apontam para esses arquivos versionados em vez de instruir a criação manual a partir do bloco de código |
+| 2 | Adicionar `docker compose up --build` ao roteiro | Incluído no Passo 7 como alternativa de um único comando a `docker compose build` + `docker compose up -d`, recomendado para a primeira execução ou após alterações no `Dockerfile`/código-fonte |
+| 3 | Usar o próprio fork no primeiro comando de clone | O Passo 1 agora clona `https://github.com/lucas-gitirana/85MAN-migracao-proshop-v2.git` (este repositório) em vez do repositório original de `bradtraversy`, e as referências ao diretório clonado foram ajustadas de `proshop-v2/` para `85MAN-migracao-proshop-v2/` |
+
+Nenhuma mudança estrutural no plano de migração, no Dockerfile multi-stage ou no plano de rollback/validação foi necessária.
